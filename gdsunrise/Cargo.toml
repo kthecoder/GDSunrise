@@ -1,0 +1,13 @@
+[package]
+name = "gdsunrise"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+godot = "0.3.0"
+kuzu = "0.10.0"
+twitch-irc = "5.0.1"
+warp = "0.3.7"
+
+[lib]
+crate-type = ["cdylib"]  # Compile this crate to a dynamic C library.

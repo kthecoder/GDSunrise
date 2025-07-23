@@ -1,0 +1,17 @@
+[configuration]
+
+entry_symbol = "gdext_rust_init"
+compatibility_minimum = "4.4"
+reloadable = true
+
+[libraries]
+linux.debug.x86_64 =     "./linux/web_pink.so"
+linux.release.x86_64 =   "./linux/web_pink.so"
+
+windows.debug.x86_64 =   "./windows/web_pink.dll"
+windows.release.x86_64 = "./windows/web_pink.dll"
+
+macos.debug =            "./macos/web_pink.dylib"
+macos.release =          "./macos/web_pink.dylib"
+macos.debug.arm64 =      "./macos/web_pink.dylib"
+macos.release.arm64 =    "./macos/web_pink.dylib"
