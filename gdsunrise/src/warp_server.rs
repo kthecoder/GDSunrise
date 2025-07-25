@@ -1,16 +1,21 @@
-use gdext::prelude::*;
-use warp::Filter;
-use tokio::sync::broadcast;
+use godot::prelude::*;
+use warp::{Filter, Rejection, Reply};
+use warp::http::StatusCode;
 use warp::ws::{Message, WebSocket};
 use futures::{StreamExt, SinkExt};
+use std::sync::{Arc, Mutex};
+use tokio::runtime::Runtime;
+use std::net::SocketAddr;
+use futures::stream::SplitSink;
+use std::convert::Infallible;
 
 #[derive(GodotClass)]
-#[class(base=RefCounted)]
+#[class(base=RefCounted, init)]
 struct WarpServer {
     runtime: Option<Runtime>,
     static_files_path: String,
     server_port: u16, // Store port number
-
+    senders: Arc<Mutex<Vec<SplitSink<WebSocket, Message>>>>,
 }
 
 #[godot_api]
@@ -26,14 +31,20 @@ impl WarpServer {
         Returns:
             WarpServer: A new instance of the WarpServer class.
      */
-    #[func]
     fn new() -> Self {
         Self {
-            runtime: Some(Runtime::new().unwrap()),
+            runtime: None,
             static_files_path: "dist".to_string(), // Default folder
             server_port: 6699, // Default port
+            senders: Arc::new(Mutex::new(Vec::new())),
         }
     }
+
+    //======================================================================//
+    //
+    //  Web Server
+    //
+    //======================================================================//
 
     /*
         FUNCTION : set_static_folder
@@ -66,7 +77,6 @@ impl WarpServer {
         self.server_port = port;
     }
 
-
     /*
         FUNCTION : start_server
 
@@ -84,22 +94,43 @@ impl WarpServer {
         let folder = self.static_files_path.clone();
         let port = self.server_port;
 
-        let rt = self.runtime.as_ref().unwrap();
-        rt.spawn(async move {
+        self.runtime
+        .as_ref()
+        .expect("Tokio runtime not initialized")
+        .spawn(async move {
+            let folder = folder.clone(); // move-friendly
             let static_files = warp::fs::dir(&folder);
 
-            // Ensure all unmatched routes return index.html for Vue Router
-            let index_route = warp::path::end()
-                .or(warp::any())
-                .map(move || warp::fs::file(format!("{}/index.html", folder)));
 
-            let routes = warp::get().and(static_files.or(index_route));
+            let index_fallback = warp::any().map(move || {
+                    warp::fs::file(format!("{}/index.html", folder))
+                });
+
+
+
+            let routes = warp::get()
+                    .and(static_files.or(index_fallback))
+                    .recover(|_err: Rejection| async move {
+                        Ok::<_, Infallible>(warp::reply::with_status(
+                            "<h1>404: Not Found</h1>",
+                            StatusCode::NOT_FOUND,
+                        ))
+                    });
+
+
 
             warp::serve(routes)
-                .run(([127, 0, 0, 1], port))
-                .await;
+                    .run(([127, 0, 0, 1], port))
+                    .await;
         });
     }
+
+    //======================================================================//
+    //
+    //  WebSocket 
+    //
+    //======================================================================//
+    
 
     /*
         FUNCTION : start_websocket
@@ -112,71 +143,81 @@ impl WarpServer {
         Returns:
             None
      */
-    #[func]
-    fn start_websocket(&mut self) {
-        let port = self.server_port + 1; // WebSocket runs on a separate port
-        let (tx, _rx) = broadcast::channel::<String>(10);
-        self.ws_tx = Some(tx.clone());
+    pub async fn start_websocket(self, port: u16) {
+        let senders = self.senders.clone(); // Clone just what’s needed
 
-        let rt = self.runtime.as_ref().unwrap();
-        rt.spawn(async move {
-            let websocket_route = warp::path("updates")
-                .and(warp::ws())
-                .map(move |ws: warp::ws::Ws| {
-                    let tx = tx.clone();
-                    ws.on_upgrade(move |socket| handle_connection(socket, tx))
-                });
+        let routes = warp::path("ws")
+            .and(warp::ws())
+            .map(move |ws: warp::ws::Ws| {
+                let senders = senders.clone();
+                ws.on_upgrade(move |socket| WarpServer::handle_connection(socket, senders))
+            });
 
-            warp::serve(websocket_route)
-                .run(([127, 0, 0, 1], port))
-                .await;
-        });
+        let addr = SocketAddr::from(([127, 0, 0, 1], port + 1));
+        println!("Warp WebSocket listening on ws://{}", addr);
+        warp::serve(routes).run(addr).await;
     }
 
-    /*
-        FUNCTION : notify_clients
+    fn spawn_websocket(&self) {
+        let port = self.server_port + 1;
+        let cloned_self: &WarpServer = self.clone(); // Derive Clone or clone individual fields
 
-        Sends a message to all connected WebSocket clients.
-        This function is used to broadcast updates to the clients.
+        self.runtime
+            .as_ref()
+            .expect("Runtime not initialized")
+            .spawn(async move {
+                cloned_self.start_websocket(port).await;
+            });
+    }
 
-        Parameters:
-            message (String): The message to send to all connected clients.
-        Returns:
-            None
-     */
-    #[func]
-    fn notify_clients(&self, message: String) {
-        if let Some(tx) = &self.ws_tx {
-            let _ = tx.send(message);
+
+    pub fn websocket_route(&self) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
+        let senders = self.senders.clone();
+
+        warp::path("ws")
+            .and(warp::ws())
+            .map(move |ws: warp::ws::Ws| {
+                let senders = senders.clone();
+                ws.on_upgrade(move |socket| Self::handle_connection(socket, senders))
+            })
+    }
+
+    async fn handle_connection(ws: WebSocket, senders: Arc<Mutex<Vec<SplitSink<WebSocket, Message>>>>) {
+        let (tx, mut rx) = ws.split();
+        senders.lock().unwrap().push(tx);
+
+        while let Some(Ok(_msg)) = rx.next().await {
+            // We're ignoring browser messages; it's a broadcast-only server
         }
     }
 
-    /*
-        FUNCTION : handle_connection
-
-        Handles a new WebSocket connection. It listens for incoming messages
-        and broadcasts them to all connected clients.
-
-        Parameters:
-            ws (WebSocket): The WebSocket connection.
-            tx (broadcast::Sender<String>): The broadcast channel to send messages to clients.
-        Returns:
-            None
-     */
     #[func]
-    async fn handle_connection(ws: WebSocket, tx: broadcast::Sender<String>) {
-        let (mut sender, mut receiver) = ws.split();
-        let mut rx = tx.subscribe();
+    fn init_websocket(&mut self) {
+        self.spawn_websocket();
+    }
 
+    #[func]
+    fn get_websocket_port(&self) -> u16 {
+        self.server_port + 1
+    }
+
+    #[func]
+    fn send_json(&self, json: String) {
+        let senders = self.senders.clone();
+
+        // Spawn an async task that runs independently
         tokio::spawn(async move {
-            while let Ok(update) = rx.recv().await {
-                let _ = sender.send(Message::text(update)).await;
+            let msg = Message::text(json);
+            let mut locked = senders.lock().await;
+
+            let mut i = 0;
+            while i < locked.len() {
+                match locked[i].send(msg.clone()).await {
+                    Ok(_) => i += 1,
+                    Err(_) => { locked.remove(i); } // Drop failed sender
+                }
             }
         });
-
-        while let Some(Ok(msg)) = receiver.next().await {
-            let _ = tx.send(msg.to_str().unwrap().to_string());
-        }
     }
 
 }

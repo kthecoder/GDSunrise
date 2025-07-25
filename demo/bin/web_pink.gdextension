@@ -5,13 +5,13 @@ compatibility_minimum = "4.4"
 reloadable = true
 
 [libraries]
-linux.debug.x86_64 =     "./linux/web_pink.so"
-linux.release.x86_64 =   "./linux/web_pink.so"
+linux.debug.x86_64 =     "./linux/gdsunrise.so"
+linux.release.x86_64 =   "./linux/gdsunrise.so"
 
-windows.debug.x86_64 =   "./windows/web_pink.dll"
-windows.release.x86_64 = "./windows/web_pink.dll"
+windows.debug.x86_64 =   "./windows/gdsunrise.dll"
+windows.release.x86_64 = "./windows/gdsunrise.dll"
 
-macos.debug =            "./macos/web_pink.dylib"
-macos.release =          "./macos/web_pink.dylib"
-macos.debug.arm64 =      "./macos/web_pink.dylib"
-macos.release.arm64 =    "./macos/web_pink.dylib"
+macos.debug =            "./macos/gdsunrise.dylib"
+macos.release =          "./macos/gdsunrise.dylib"
+macos.debug.arm64 =      "./macos/gdsunrise.dylib"
+macos.release.arm64 =    "./macos/gdsunrise.dylib"

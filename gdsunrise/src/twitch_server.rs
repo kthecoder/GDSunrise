@@ -1,16 +1,21 @@
-use twitch_irc::login::StaticLoginCredentials;
-use twitch_irc::TwitchIRCClient;
-use twitch_irc::{ClientConfig, SecureTCPTransport};
+use twitch_irc::{
+    login::StaticLoginCredentials,
+    ClientConfig,
+    SecureTCPTransport,
+    TwitchIRCClient,
+};
+use tokio::sync::mpsc::{unbounded_channel};
 
-use tokio::runtime::Runtime;
+
+use godot::prelude::*;
 
 #[derive(GodotClass)]
-#[class(base=RefCounted)]
+#[class(base=RefCounted, init)]
 struct TwitchServer {
-    config: twitch_irc::config,
-    join_handle: Option<JoinHandle<()>>,
-    client: Option<TwitchIRCClient<SecureTCPTransport, StaticLoginCredentials>>, // Add this field
+    _base: Base<RefCounted>,
+    client: Option<TwitchIRCClient<SecureTCPTransport, StaticLoginCredentials>>,
 }
+
 
 #[godot_api]
 impl TwitchServer {
@@ -25,11 +30,10 @@ impl TwitchServer {
         Returns:
             TwitchServer: A new instance of the TwitchServer class.
      */
-    #[func]
     fn new() -> Self {
+
         Self {
-            config: ClientConfig::default(),
-            join_handle: None,
+            _base: Base::default(),
             client: None,
         }
     }
@@ -47,30 +51,57 @@ impl TwitchServer {
             twitch_channel (String): The name of the Twitch channel to connect to.
         Returns:
             Result<(), String>: Ok if successful, or an error message if initialization fails.
-     */    
-    #[func]
-    pub async fn init_twitch_client(&mut self, twitch_channel: String) -> Result<(), String> {
+     */
+
+    #[signal]
+    fn twitch_chat_message_ingest(username: GString, command: GString);
+
+    async fn init_twitch_client(&mut self, twitch_channel: String) -> Result<(), String> {
+        let config = ClientConfig::default();
+
         let (mut incoming_messages, client) =
         TwitchIRCClient::<SecureTCPTransport, StaticLoginCredentials>::new(config);
-        
-        join_handle = tokio::spawn(async move {
+        let (tx, mut rx) = unbounded_channel::<(String, String)>();
+
+
+        let join_handle = tokio::spawn(async move {
             while let Some(message) = incoming_messages.recv().await {
                 if let twitch_irc::message::ServerMessage::Privmsg(msg) = &message {
                     if msg.message_text.starts_with('!') {
                         let username = msg.sender.name.clone();
                         let command = msg.message_text.clone();
-                        godot::GodotObject::owner().emit_signal(
-                            "twitch_chat_message_ingest".into(),
-                            &[username.to_variant(), command.to_variant()],
-                        );
+                        let _ = tx.send((username,command));
                     }
                 }
             }
         });
 
-         client.join(twitch_channel.to_owned()).unwrap();
+        while let Some((username, command)) = rx.recv().await {
+        self.signals()
+            .twitch_chat_message_ingest()
+            .emit(&GString::from(username), &GString::from(command));
+        }
 
-         join_handle.await.unwrap();
+        client.join(twitch_channel.to_owned()).map_err(|e| format!("Failed to join Twitch channel: {}", e))?;
+
+        join_handle.await.map_err(|e| format!("Async task failed: {}", e))?;
+
+        Ok(())
+
+    }
+
+    #[func]
+    fn start_twitch_client(&mut self, twitch_channel: GString) {
+        let twitch_channel = twitch_channel.to_string();
+        let mut cloned_self = self.clone(); // Requires Clone or clone relevant fields
+
+        // Spawn the async method
+        self._base
+            .get_tree()
+            .expect("No SceneTree")
+            .create_task(async move {
+                let _ = cloned_self.init_twitch_client(twitch_channel).await;
+            });
     }
     
 }

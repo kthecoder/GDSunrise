@@ -1,13 +1,15 @@
-use kuzu::{Database, Connection};
+use kuzu::{Database, SystemConfig, Connection};
+use godot::prelude::*;
+use std::sync::Arc;
+
 
 #[derive(GodotClass)]
-#[class(base=RefCounted)]
-struct KuzuServer {
-    db: Option<Database>,
-    conn: Option<Connection>,
+#[class(base = RefCounted, init)]
+pub struct KuzuServer {
     config: SystemConfig,
-    ws_tx: Option<broadcast::Sender<String>>, // WebSocket broadcaster
+    db: Option<Arc<Database>>,
 }
+
 
 #[godot_api]
 impl KuzuServer {
@@ -23,21 +25,20 @@ impl KuzuServer {
         Returns:
             KuzuServer: A new instance of the KuzuServer class.
      */
-    #[func]
     fn new() -> Self {
+        // let config = SystemConfig::default();
+
+        // config.buffer_pool_size(512 * 1024 * 1024); // 512MB
+        // config.max_num_threads(1); // Defaults to 1 
+        // config.enable_compression(true);
+        // config.read_only(false);
+        // config.max_db_size(1 << 30); // 1 GB default
+        // config.auto_checkpoint(true);
+        // config.checkpoint_threshold(1024 * 1024 * 100); // 100MB
+        
         Self {
+            config: SystemConfig::default(),
             db: None,
-            conn: None,
-            config: SystemConfig {
-                buffer_pool_size: 512 * 1024 * 1024, // 512MB
-                max_num_threads: 1, // Defaults to 1
-                enable_compression: true,
-                read_only: false,
-                max_db_size: 1 << 30, // 1 GB default
-                auto_checkpoint: true,
-                checkpoint_threshold: 1024 * 1024 * 100, // 100MB
-            },
-            ws_tx: None,
         }
     }
 
@@ -45,6 +46,7 @@ impl KuzuServer {
         FUNCTION : init_db
 
         Initializes the Kuzu database with the specified path and configuration.
+        Ability to have multiple databases by instantiating multiple KuzuServer's with different paths.
 
         Parameters:
             path (String): The path to the Kuzu database file.
@@ -54,8 +56,14 @@ impl KuzuServer {
      */
     #[func]
     fn init_db(&mut self, path: String) {
-        self.db = Some(Database::new(&path, self.config.clone()));
-        self.conn = Some(Connection::new(self.db.as_ref().unwrap()));
+        match Database::new(path, self.config.clone()) {
+            Ok(db) => {
+                let arc_db = Arc::new(db);
+                self.db = Some(arc_db);
+                godot_print!("GDSunrise | Kuzu DB initialized.");
+            }
+            Err(e) => godot_error!("GDSunrise | Database error: {:?}", e),
+        }
     }
 
     /*
@@ -69,12 +77,20 @@ impl KuzuServer {
             String: The result of the query as a string, or an error message if the connection is not established.
      */
     #[func]
-    fn query(&self, query: String) -> String {
-        if let Some(conn) = &self.conn {
-            let result = conn.query(&query);
-            return format!("{:?}", result);
+    fn query(&self, q: String) -> String {
+        match &self.db {
+            Some(db) => match Connection::new(db) {
+                Ok(conn) => match conn.query(&q) {
+                    Ok(r) => format!("{}", r),
+                    Err(e) => format!("GDSunrise | Query error: {:?}", e),
+                },
+                Err(e) => format!("GDSunrise | Connection init failed: {:?}", e),
+            },
+            None => "GDSunrise | No DB initialized.".to_string(),
         }
-        "GDSunrise | ERROR No connection to KuzuDB".to_string()
     }
+
+    //TODO : Add Kuzu Config Setter Functions
+    
     
 }
